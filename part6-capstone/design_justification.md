@@ -1,31 +1,40 @@
 ## Storage Systems
 
-The hospital's four goals require four distinct storage systems, each chosen to match the nature and access patterns of its data.
+To support the hospital’s four goals, we’ve selected a hybrid storage strategy combining a data lake, data warehouse, and real-time streaming systems:
 
-**Goal 1 — Readmission Prediction:** Historical patient treatment data lives in a **Data Lakehouse (Delta Lake on S3)**. Raw EHR exports, lab results, and prior hospitalization records are stored as Parquet files, versioned and queryable via Apache Spark. The ML model (XGBoost / LightGBM) is trained on this curated dataset in batch. The Lakehouse is chosen over a pure data warehouse because it stores raw, semi-structured EHR exports without forcing an upfront schema, while still supporting SQL-based feature engineering.
+- **Predicting patient readmission risk** requires access to large volumes of historical treatment data. We use a **Data Lake** (e.g., Azure Data Lake or Amazon S3) to store raw EHR, EMR, and lab reports. This format supports flexible schema evolution and is ideal for training machine learning models.
 
-**Goal 2 — Plain-English Patient History Queries:** Structured patient records are stored in **PostgreSQL (OLTP)**, while their text representations (discharge summaries, doctor notes) are chunked, embedded using BioClinicalBERT, and stored in a **Vector Database (Pinecone or pgvector)**. When a doctor asks a question, the query is embedded and an ANN search retrieves the most relevant patient history chunks. A RAG pipeline then synthesizes a natural language answer with citations, referencing the original PostgreSQL record for full context.
+- **Natural language queries by doctors** rely on structured, indexed data. We use a **Data Warehouse** (e.g., Snowflake or Google BigQuery) to store cleaned and normalized patient records. This enables fast joins and semantic search via an NLP engine.
 
-**Goal 3 — Monthly Management Reports:** Cleaned, aggregated data is loaded into a **columnar Analytical Data Warehouse (Snowflake or Amazon Redshift)**. A dbt transformation layer standardizes billing records, bed occupancy logs, and department cost data from the Lakehouse into a star schema with `fact_encounters`, `dim_department`, `dim_date`, and `dim_bed` tables. Business Intelligence tools (Tableau, Metabase) connect directly to the DW for self-serve reporting.
+- **Monthly management reports** (e.g., bed occupancy, department-wise costs) are generated from the **Data Warehouse**, which aggregates structured data from multiple departments. This supports OLAP-style queries and dashboarding tools like Power BI or Tableau.
 
-**Goal 4 — Real-Time ICU Vitals Streaming:** ICU device data is ingested via **Apache Kafka** and processed in real time by **Apache Flink** (or Spark Structured Streaming). Anomalies (e.g., SpO2 < 90%) trigger immediate alerts to clinical staff. A 7-day Kafka retention window provides a rolling buffer; longer-term vitals are archived to the Lakehouse for retrospective analysis.
+- **Real-time ICU vitals** are streamed into a **Streaming Analytics System** (e.g., Apache Kafka + Apache Flink or Azure Stream Analytics). These vitals are stored in a time-series database (e.g., InfluxDB or TimescaleDB) for immediate alerting and retrospective analysis.
+
+This layered approach ensures each goal is matched with the most appropriate storage system, balancing flexibility, performance, and scalability.
 
 ---
 
 ## OLTP vs OLAP Boundary
 
-The **OLTP boundary** ends at the point where data is written by clinical or operational users in real time: patient admissions and updates in PostgreSQL, ICU vitals arriving over Kafka, and billing entries from admin systems. These systems prioritize **low-latency writes, row-level locking, and ACID compliance** — a doctor updating a prescription must be immediately consistent and durable.
+The boundary between OLTP (Online Transaction Processing) and OLAP (Online Analytical Processing) is clearly defined in our architecture:
 
-The **OLAP boundary begins** at the ETL/transformation layer. A nightly (or hourly) dbt pipeline extracts records from PostgreSQL and the Lakehouse, applies aggregations, and loads them into Snowflake. Management reports never query the live PostgreSQL database — this separation prevents analytical queries from degrading clinical application performance. The Lakehouse acts as the staging zone between these two worlds: raw data lands there from ingestion, and the DW loads only from the Lakehouse's curated layer.
+- **OLTP ends at the data ingestion layer.** This includes real-time vitals from ICU devices, transactional updates to patient records, and incoming doctor queries. These systems prioritize speed, reliability, and atomicity.
+
+- **OLAP begins at the storage and analytics layer.** Once data is ingested and transformed, it flows into the data lake and warehouse. Here, it’s used for batch analytics, predictive modeling, and reporting. This layer supports complex queries, aggregations, and historical analysis.
+
+This separation ensures transactional systems remain fast and responsive, while analytical systems handle heavy computation without impacting operational performance.
 
 ---
 
 ## Trade-offs
 
-**Trade-off: Operational Complexity vs. Best-of-Breed Storage**
+A key trade-off in this design is the **latency between ingestion and analytics**. Real-time vitals are streamed instantly, but historical treatment data and monthly reports rely on batch ETL processes, which can introduce delays.
 
-The architecture uses five distinct storage systems (PostgreSQL, Kafka, Delta Lake, Snowflake, Vector DB). Each is optimal for its use case, but this introduces significant **operational complexity**: five systems to monitor, back up, secure under HIPAA, and maintain SLAs for. A smaller team might struggle with this surface area.
+This affects use cases like predicting readmission risk in near real-time or generating up-to-the-minute occupancy reports.
 
-**Mitigation strategy:** The most practical mitigation is to adopt a **unified data platform** that consolidates several of these layers. For example, Databricks (Delta Lake + Spark + MLflow + Vector Search) covers Goals 1, 2, and partial Goal 4 in a single managed service. Alternatively, Snowflake's Cortex AI feature set now supports vector search and streaming ingestion, reducing the number of independent systems to maintain. A phased rollout approach — starting with PostgreSQL + Snowflake for Goals 1 and 3, then layering in Kafka and Vector DB — allows the team to build operational maturity before adding complexity.
+To mitigate this:
+- We implement **micro-batching** for ETL pipelines, reducing latency from hours to minutes.
+- We use **streaming joins and incremental updates** in the data warehouse to keep dashboards fresh.
+- For critical alerts (e.g., ICU vitals), we bypass batch layers entirely and use real-time processing engines.
 
----
+This hybrid strategy balances performance with accuracy, ensuring timely insights without overwhelming the system.

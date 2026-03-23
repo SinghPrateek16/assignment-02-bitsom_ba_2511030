@@ -1,8 +1,10 @@
-Assignment 02 — Database Systems
+Assigment 02 - Database Systems
+
 Student ID: bitsom_ba_2511030
 Repository: assignment-02-bitsom_ba_2511030
 
 This repository contains solutions for all six parts of the Database Systems Assignment.
+
 
 Structure
 assignment-02-bitsom_ba_2511030/
